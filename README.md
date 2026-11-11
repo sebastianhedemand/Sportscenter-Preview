@@ -51,3 +51,19 @@ The SQL creates the public.fodboldcenter_data table and enables row-level securi
 5. Add secure free/premium entitlements and payment webhooks only after backend and legal/data-provider review.
 
 No subscription payment flow, public paid picks service or independently audited ROI reporting is claimed to be implemented at this stage.
+
+## Automatisk opdatering af kampresultater
+
+Preview-repositoryet indeholder en GitHub Actions-workflow, der hver dag kl. 04:30 UTC henter afsluttede fodboldresultater fra API-Football. Workflowet kan også startes manuelt under fanen Actions.
+
+For at aktivere opdateringen skal repositoryets ejer tilføje en GitHub Actions secret:
+
+1. Åbn Settings → Secrets and variables → Actions.
+2. Vælg New repository secret.
+3. Navn: API_FOOTBALL_KEY.
+4. Værdi: din API-Football API-nøgle.
+5. Gem. Nøglen bliver kun brugt af workflowet og lægges ikke i hjemmesidens JavaScript.
+
+Workflowet kontrollerer de seneste 7 dage for afsluttede kampe i de otte konfigurerede fodboldligaer. Det udfylder kun manglende resultater; eksisterende eller manuelle resultater overskrives ikke. Konflikter markeres i workflow-loggen til manuel kontrol. Når index.html ændres, udløser det automatisk en ny publicering af preview-siden.
+
+Bemærk: Dette automatiserer de fodboldresultater, som den nuværende API-Football-integration dækker. Det er ikke endnu en komplet automatisk resultatløsning for håndbold eller alle ønskede ligaer.
