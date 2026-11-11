@@ -1,0 +1,42 @@
+name: Opdater kampresultater automatisk
+
+on:
+  schedule:
+    - cron: "30 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update-results
+  cancel-in-progress: false
+
+jobs:
+  update-results:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Hent repository
+        uses: actions/checkout@v4
+
+      - name: Opsæt Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Hent og opdater afsluttede kampe
+        env:
+          API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
+        run: python scripts/update_results.py
+
+      - name: Gem ændringer
+        run: |
+          if git diff --quiet -- index.html; then
+            echo "Ingen nye resultater."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add index.html
+          git commit -m "Opdater kampresultater automatisk"
+          git push
