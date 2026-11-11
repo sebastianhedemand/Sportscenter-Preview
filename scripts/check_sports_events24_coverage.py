@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Read-only coverage probe for SportsEvents24. Makes a small, quota-conscious set of requests."""
+"""Read-only, quota-conscious SportsEvents24 league and event coverage check."""
 from __future__ import annotations
 
 import json
-import os
+import re
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -12,32 +13,53 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 BASE = "https://sportsevents24.com/api/v1"
-# SportsEvents24 country + sport filters; this is discovery, not proof of complete coverage.
-SELECTIONS = [
-    ("football", 1, "DK", ["Superliga", "1. Division"]),
-    ("football", 1, "GB", ["Premier League", "Championship", "League One"]),
-    ("football", 1, "DE", ["Bundesliga"]),
-    ("football", 1, "IT", ["Serie A"]),
-    ("football", 1, "ES", ["La Liga", "Primera División"]),
-    ("handball", 6, "DK", ["Herreliga", "Kvindeliga", "1. Division"]),
-    ("handball", 6, "DE", ["1. Bundesliga Männer", "Handball-Bundesliga"]),
-]
 TIMEOUT = 25
+MAX_PAGES_PER_SELECTION = 5
+MAX_EVENT_CHECKS = 20
+
+# Match exact top-flight/second-tier competition names, not similarly named youth,
+# regional, cup, futsal or women's competitions unless explicitly requested.
+TARGETS = [
+    {"sport": "football", "sport_id": 1, "country": "DK", "league": "Superligaen",
+     "patterns": [r"3f\s*superliga"], "season": "2026/27"},
+    {"sport": "football", "sport_id": 1, "country": "DK", "league": "1. Division",
+     "patterns": [r"betinia\s*liga"], "season": "2026/27"},
+    {"sport": "football", "sport_id": 1, "country": "GB", "league": "Premier League",
+     "patterns": [r"premier\s*league"], "season": "2026/27"},
+    {"sport": "football", "sport_id": 1, "country": "GB", "league": "Championship",
+     "patterns": [r"championship"], "season": "2026/27"},
+    {"sport": "football", "sport_id": 1, "country": "GB", "league": "League One",
+     "patterns": [r"league\s*one"], "season": "2026/27"},
+    {"sport": "football", "sport_id": 1, "country": "DE", "league": "Bundesliga",
+     "patterns": [r"bundesliga"], "season": "2026/27"},
+    {"sport": "football", "sport_id": 1, "country": "IT", "league": "Serie A",
+     "patterns": [r"serie\s*a\s*2026"], "season": "2026/27"},
+    {"sport": "football", "sport_id": 1, "country": "ES", "league": "La Liga",
+     "patterns": [r"primera\s*divisi[oó]n", r"laliga", r"la\s*liga"], "season": "2026/27"},
+    {"sport": "handball", "sport_id": 6, "country": "DK", "league": "Herreligaen",
+     "patterns": [r"herreliga"], "season": "2026/27"},
+    {"sport": "handball", "sport_id": 6, "country": "DK", "league": "Kvindeligaen",
+     "patterns": [r"kvindeliga"], "season": "2026/27"},
+    {"sport": "handball", "sport_id": 6, "country": "DK", "league": "1. Division herrer",
+     "patterns": [r"1\.\s*division\s*herrer", r"1\.\s*division\s*m[aæ]nd"], "season": "2026/27"},
+    {"sport": "handball", "sport_id": 6, "country": "DK", "league": "1. Division damer",
+     "patterns": [r"1\.\s*division\s*damer", r"1\.\s*division\s*kvinder"], "season": "2026/27"},
+    {"sport": "handball", "sport_id": 6, "country": "DE", "league": "Tysk Handball-Bundesliga",
+     "patterns": [r"1\.\s*bundesliga\s*m[aä]nner", r"handball-bundesliga"], "season": "2026/27"},
+]
 
 
 def get_json(path: str, params: dict[str, str]) -> dict:
     url = f"{BASE}/{path}?{urllib.parse.urlencode(params)}"
-    req = urllib.request.Request(url, headers={"User-Agent": "Sportscenter-preview-coverage-check/1.0"})
+    req = urllib.request.Request(url, headers={"User-Agent": "Sportscenter-preview-coverage-check/2.0"})
     with urllib.request.urlopen(req, timeout=TIMEOUT) as response:
-        if response.status != 200:
-            raise RuntimeError(f"HTTP {response.status}")
         payload = json.loads(response.read().decode("utf-8"))
-        if not isinstance(payload, dict):
-            raise RuntimeError("Unexpected JSON response shape")
-        return payload
+    if not isinstance(payload, dict):
+        raise RuntimeError("Unexpected JSON response shape")
+    return payload
 
 
-def rows(payload: dict) -> list[dict]:
+def data_rows(payload: dict) -> list[dict]:
     data = payload.get("data", [])
     if isinstance(data, list):
         return [x for x in data if isinstance(x, dict)]
@@ -49,70 +71,166 @@ def rows(payload: dict) -> list[dict]:
     return []
 
 
+def tournament_name(row: dict) -> str:
+    for key in ("name", "tournament_name", "title"):
+        if row.get(key):
+            return str(row[key])
+    return ""
+
+
+def tournament_id(row: dict):
+    for key in ("tournament_id", "id"):
+        if row.get(key) is not None:
+            return row[key]
+    return None
+
+
+def matches_target(name: str, target: dict) -> bool:
+    text = name.casefold()
+    return any(re.search(pattern, text, re.I) for pattern in target["patterns"])
+
+
 def main() -> int:
     report = {
         "checked_at_utc": datetime.now(timezone.utc).isoformat(),
         "provider": "SportsEvents24",
-        "mode": "read-only discovery; no app data is changed",
-        "selections": [],
+        "mode": "read-only; no Sportscenter app data is changed",
+        "targets": [],
+        "limits": {
+            "max_pages_per_country_sport": MAX_PAGES_PER_SELECTION,
+            "max_event_checks": MAX_EVENT_CHECKS,
+            "documented_free_beta": "100 requests/day/IP; 5,000 returned records/month/IP; 100 records/response"
+        },
         "notes": [
-            "A tournament appearing in discovery does not prove that all seasons, fixtures or results are complete.",
-            "The provider documents a free beta quota of 100 data requests/day/IP and 5,000 returned records/month/IP.",
-            "Commercial redistribution rights must be confirmed with the provider before a paid launch."
+            "Pagination follows nextCursor with identical filters as documented by the provider.",
+            "A tournament name is not proof of complete season coverage.",
+            "Event checks use the provider's default published event window (today through next 7 days).",
+            "The API permits event dates only within the last 7 and next 30 days; this does not establish deep historical availability.",
+            "No odds endpoint is documented in the public API overview.",
+            "Commercial redistribution rights must be confirmed with the provider before paid use."
         ],
+        "selection_runs": []
     }
 
-    for sport, sport_id, country, expected in SELECTIONS:
-        item = {"sport": sport, "country": country, "expected_competitions": expected}
-        try:
-            payload = get_json("tournaments", {"sport_id": str(sport_id), "country": country, "limit": "100"})
-            found = rows(payload)
-            names = []
-            for row in found:
-                name = row.get("name") or row.get("tournament_name") or row.get("title")
-                if name:
-                    names.append(str(name))
-            item.update({
-                "status": "ok",
-                "tournament_rows": len(found),
-                "tournament_names": names[:100],
-                "usage": payload.get("usage"),
-                "next_cursor_available": bool(payload.get("nextCursor")),
-            })
-        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, RuntimeError) as exc:
-            item.update({"status": "error", "error": str(exc)})
-        report["selections"].append(item)
+    groups = {}
+    for target in TARGETS:
+        groups.setdefault((target["sport_id"], target["country"]), []).append(target)
+
+    found_by_key = {}
+    for (sport_id, country), targets in groups.items():
+        cursor = None
+        pages = 0
+        all_rows = []
+        error = None
+        while pages < MAX_PAGES_PER_SELECTION:
+            params = {"sport_id": str(sport_id), "country": country, "limit": "100"}
+            if cursor:
+                params["cursor"] = cursor
+            try:
+                payload = get_json("tournaments", params)
+                pages += 1
+                batch = data_rows(payload)
+                all_rows.extend(batch)
+                cursor = payload.get("nextCursor")
+                if not cursor:
+                    break
+                # Stop early only when every target in this country/sport group is located.
+                names = [tournament_name(r) for r in all_rows]
+                if all(any(matches_target(n, t) for n in names) for t in targets):
+                    break
+                time.sleep(6.2)  # remain below 10 requests/minute
+            except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, RuntimeError) as exc:
+                error = str(exc)
+                break
+
+        report["selection_runs"].append({
+            "sport_id": sport_id, "country": country, "pages_read": pages,
+            "rows_read": len(all_rows), "more_pages_available": bool(cursor),
+            "error": error
+        })
+        for target in targets:
+            matches = [r for r in all_rows if matches_target(tournament_name(r), target)]
+            # Prefer exact season/year matches, but retain all matching names for review.
+            season_matches = [r for r in matches if target["season"] in tournament_name(r)]
+            chosen = season_matches or matches
+            found_by_key[(target["sport"], target["country"], target["league"])] = {
+                "target": target, "matches": chosen, "all_matches": matches,
+                "pages_read": pages, "error": error,
+                "more_pages_available": bool(cursor)
+            }
+
+    event_checks = 0
+    for target in TARGETS:
+        key = (target["sport"], target["country"], target["league"])
+        entry = found_by_key[key]
+        match_rows = entry["matches"]
+        result = {
+            "sport": target["sport"], "country": target["country"],
+            "requested_league": target["league"], "expected_season": target["season"],
+            "status": "not_found" if not match_rows else "tournament_found",
+            "tournament_matches": [
+                {"name": tournament_name(r), "tournament_id": tournament_id(r)}
+                for r in entry["all_matches"][:20]
+            ],
+            "pagination_incomplete": entry["more_pages_available"],
+            "discovery_error": entry["error"],
+            "event_check": "not_run"
+        }
+        usable = next((r for r in match_rows if tournament_id(r) is not None), None)
+        if usable and event_checks < MAX_EVENT_CHECKS:
+            try:
+                payload = get_json("events", {"tournament_id": str(tournament_id(usable)), "limit": "100"})
+                events = data_rows(payload)
+                event_checks += 1
+                scored = [e for e in events if e.get("result") or e.get("home_score") is not None or e.get("score") is not None]
+                result["event_check"] = "ok"
+                result["published_events_in_default_window"] = len(events)
+                result["events_with_score_fields"] = len(scored)
+                result["event_sample"] = events[:5]
+                result["event_usage"] = payload.get("usage")
+            except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, RuntimeError) as exc:
+                result["event_check"] = "error"
+                result["event_error"] = str(exc)
+            time.sleep(6.2)
+        elif usable:
+            result["event_check"] = "skipped_quota_guard"
+        report["targets"].append(result)
 
     Path("sports-events24-coverage.json").write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-
     lines = [
-        "# SportsEvents24 – dækningskontrol",
-        "",
+        "# SportsEvents24 – udvidet dækningskontrol", "",
         f"- Kontrolleret (UTC): {report['checked_at_utc']}",
-        "- Metode: skrivebeskyttet opslag af turneringsoversigter; ingen ændringer i Sportscenter-appen.",
+        "- Metode: pagineret, skrivebeskyttet turneringsopslag samt begrænset test af kampdata.",
         "",
-        "| Sport | Land | Status | Turneringsrækker | Forventede ligaer |",
-        "|---|---|---:|---:|---|",
+        "| Sport | Land | Liga | Turneringsfund | Kampdata-test | Flere sider uafklaret |",
+        "|---|---|---|---|---|---|"
     ]
-    for item in report["selections"]:
+    for item in report["targets"]:
         lines.append(
-            f"| {item['sport']} | {item['country']} | {item['status']} | "
-            f"{item.get('tournament_rows', '—')} | {', '.join(item['expected_competitions'])} |"
+            f"| {item['sport']} | {item['country']} | {item['requested_league']} | "
+            f"{item['status']} | {item['event_check']} | {'Ja' if item['pagination_incomplete'] else 'Nej'} |"
         )
-    lines += ["", "## Fundne turneringsnavne", ""]
-    for item in report["selections"]:
-        lines += [f"### {item['sport'].title()} – {item['country']}", ""]
-        if item.get("tournament_names"):
-            lines += [f"- {name}" for name in item["tournament_names"]]
-        elif item["status"] == "error":
-            lines.append(f"Fejl: {item['error']}")
+    lines += ["", "## Detaljer", ""]
+    for item in report["targets"]:
+        lines += [f"### {item['sport'].title()} – {item['requested_league']} ({item['country']})", ""]
+        if item["tournament_matches"]:
+            for t in item["tournament_matches"]:
+                lines.append(f"- {t['name']} (turnerings-ID: {t['tournament_id']})")
         else:
-            lines.append("Ingen turneringsnavne kunne udtrækkes fra svaret; kontrollér JSON-rapporten.")
+            lines.append("Ingen matchende turnering fundet i de gennemgåede sider.")
+        if item["event_check"] == "ok":
+            lines.append(f"- Kampdata i standardvinduet: {item['published_events_in_default_window']}")
+            lines.append(f"- Kampe med scorefelter: {item['events_with_score_fields']}")
+        else:
+            lines.append(f"- Kampdata-test: {item['event_check']}")
+        if item["discovery_error"]:
+            lines.append(f"- Fejl ved turneringsopslag: {item['discovery_error']}")
         lines.append("")
     lines += ["## Begrænsninger", ""] + [f"- {note}" for note in report["notes"]]
-    Path("sports-events24-coverage.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
-    print("\n".join(lines))
-    return 0 if any(x["status"] == "ok" for x in report["selections"]) else 1
+    markdown = "\n".join(lines) + "\n"
+    Path("sports-events24-coverage.md").write_text(markdown, encoding="utf-8")
+    print(markdown)
+    return 0 if any(x["status"] != "not_found" for x in report["targets"]) else 1
 
 
 if __name__ == "__main__":
