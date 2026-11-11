@@ -70,7 +70,7 @@ Bemærk: Dette automatiserer de fodboldresultater, som den nuværende API-Footba
 
 ## Test af gratis sportsdatakilder
 
-En manuel GitHub Actions-test undersøger SportsEvents24's turneringsoversigter for de relevante lande og sportsgrene. Den laver kun læseforespørgsler og gemmer Markdown- og JSON-rapporter som et workflow-artifact; den ændrer ikke `index.html` eller kampdata.
+En manuel GitHub Actions-test undersøger SportsEvents24's turneringsoversigter for de 13 ønskede fodbold- og håndboldligaer. Testen følger `nextCursor` og læser flere sider (med en grænse på fem sider pr. land/sport) i stedet for kun den første side. For fundne turneringer forsøger den også et afgrænset opslag af offentliggjorte kampe i API'ets standardvindue.
 
 Sådan køres testen:
 
@@ -79,4 +79,4 @@ Sådan køres testen:
 3. Klik **Run workflow**.
 4. Åbn den færdige kørsel og hent artifactet **sports-events24-coverage**.
 
-Testen bruger få forespørgsler og kræver ingen API-nøgle. Et fundet turneringsnavn er kun et første dækningssignal; fixtures, resultater, historisk dybde, odds og kommercielle rettigheder skal kontrolleres separat. SportsEvents24 dokumenterer gratis beta med 100 dataforespørgsler pr. dag/IP og 5.000 returnerede poster pr. måned/IP.
+Testen er skrivebeskyttet og ændrer ikke `index.html` eller kampdata. Den kræver ingen API-nøgle. Et fundet turneringsnavn eller et enkelt event-opslag beviser ikke komplet sæsondækning, historisk dybde, odds eller kommercielle rettigheder. SportsEvents24 dokumenterer gratis beta med 100 dataforespørgsler pr. dag/IP, 5.000 returnerede poster pr. måned/IP, 100 poster pr. svar og op til 10 forespørgsler pr. minut.
