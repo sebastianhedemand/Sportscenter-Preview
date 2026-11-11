@@ -67,3 +67,16 @@ For at aktivere opdateringen skal repositoryets ejer tilføje en GitHub Actions 
 Workflowet kontrollerer de seneste 7 dage for afsluttede kampe i de otte konfigurerede fodboldligaer. Det udfylder kun manglende resultater; eksisterende eller manuelle resultater overskrives ikke. Konflikter markeres i workflow-loggen til manuel kontrol. Når index.html ændres, udløser det automatisk en ny publicering af preview-siden.
 
 Bemærk: Dette automatiserer de fodboldresultater, som den nuværende API-Football-integration dækker. Det er ikke endnu en komplet automatisk resultatløsning for håndbold eller alle ønskede ligaer.
+
+## Test af gratis sportsdatakilder
+
+En manuel GitHub Actions-test undersøger SportsEvents24's turneringsoversigter for de relevante lande og sportsgrene. Den laver kun læseforespørgsler og gemmer Markdown- og JSON-rapporter som et workflow-artifact; den ændrer ikke `index.html` eller kampdata.
+
+Sådan køres testen:
+
+1. Åbn fanen Actions i dette repository.
+2. Vælg **Test gratis sportsdatakilder**.
+3. Klik **Run workflow**.
+4. Åbn den færdige kørsel og hent artifactet **sports-events24-coverage**.
+
+Testen bruger få forespørgsler og kræver ingen API-nøgle. Et fundet turneringsnavn er kun et første dækningssignal; fixtures, resultater, historisk dybde, odds og kommercielle rettigheder skal kontrolleres separat. SportsEvents24 dokumenterer gratis beta med 100 dataforespørgsler pr. dag/IP og 5.000 returnerede poster pr. måned/IP.
