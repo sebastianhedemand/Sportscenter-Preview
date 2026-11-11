@@ -1,0 +1,33 @@
+name: Test gratis sportsdatakilder
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sports-events24-coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Hent repository
+        uses: actions/checkout@v4
+
+      - name: Opsæt Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Test SportsEvents24 turneringsdækning
+        run: python scripts/check_sports_events24_coverage.py
+
+      - name: Gem dækningsrapport
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sports-events24-coverage
+          path: |
+            sports-events24-coverage.md
+            sports-events24-coverage.json
+          if-no-files-found: warn
+          retention-days: 30
