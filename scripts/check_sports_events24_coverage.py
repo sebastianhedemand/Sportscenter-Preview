@@ -6,7 +6,6 @@ import json
 import re
 import sys
 import time
-import email.utils
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -15,9 +14,10 @@ from pathlib import Path
 
 BASE = "https://sportsevents24.com/api/v1"
 TIMEOUT = 25
-MAX_PAGES_PER_SELECTION = 5
+MAX_PAGES_PER_SELECTION = 8
 MAX_EVENT_CHECKS = 13
 REQUEST_SPACING_SECONDS = 7.0
+_last_request_at = 0.0
 
 # Match exact top-flight/second-tier competition names, not similarly named youth,
 # regional, cup, futsal or women's competitions unless explicitly requested.
@@ -52,15 +52,20 @@ TARGETS = [
 
 
 def get_json(path: str, params: dict[str, str]) -> dict:
+    global _last_request_at
     url = f"{BASE}/{path}?{urllib.parse.urlencode(params)}"
-    req = urllib.request.Request(url, headers={"User-Agent": "Sportscenter-preview-coverage-check/3.0"})
+    req = urllib.request.Request(url, headers={"User-Agent": "Sportscenter-preview-coverage-check/4.0"})
+    wait = REQUEST_SPACING_SECONDS - (time.monotonic() - _last_request_at)
+    if wait > 0:
+        time.sleep(wait)
+    _last_request_at = time.monotonic()
     try:
         with urllib.request.urlopen(req, timeout=TIMEOUT) as response:
             payload = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         if exc.code == 429:
             retry_after = exc.headers.get("Retry-After", "60")
-            raise RuntimeError(f"HTTP 429 rate limited; Retry-After={retry_after}") from exc
+            raise RuntimeError(f"HTTP 429 rate limited; provider asks us to wait {retry_after} seconds. Stopping safely without retry.") from exc
         raise
     if not isinstance(payload, dict):
         raise RuntimeError("Unexpected JSON response shape")
@@ -106,10 +111,12 @@ def main() -> int:
         "limits": {
             "max_pages_per_country_sport": MAX_PAGES_PER_SELECTION,
             "max_event_checks": MAX_EVENT_CHECKS,
+            "minimum_seconds_between_all_requests": REQUEST_SPACING_SECONDS,
             "documented_free_beta": "100 requests/day/IP; 5,000 returned records/month/IP; 100 records/response"
         },
         "notes": [
-            "Pagination follows nextCursor with identical filters as documented by the provider.",
+            "Pagination follows nextCursor with identical filters; all available pages are read up to the configured safety cap.",
+            "All API requests are globally spaced; HTTP 429 stops the affected check and records Retry-After rather than retrying aggressively.",
             "A tournament name is not proof of complete season coverage.",
             "Event checks explicitly request the previous 7 UTC days through today to inspect finished-match scores.",
             "The API permits event dates only within the last 7 and next 30 days; this does not establish deep historical availability.",
@@ -141,11 +148,7 @@ def main() -> int:
                 cursor = payload.get("nextCursor")
                 if not cursor:
                     break
-                # Stop early only when every target in this country/sport group is located.
-                names = [tournament_name(r) for r in all_rows]
-                if all(any(matches_target(n, t) for n in names) for t in targets):
-                    break
-                time.sleep(REQUEST_SPACING_SECONDS)  # remain below 10 requests/minute
+                # Read all available pages up to the safety cap before declaring a league absent.
             except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, RuntimeError) as exc:
                 error = str(exc)
                 break
@@ -180,6 +183,7 @@ def main() -> int:
                 for r in entry["all_matches"][:20]
             ],
             "pagination_incomplete": entry["more_pages_available"],
+            "discovery_pages_read": entry["pages_read"],
             "discovery_error": entry["error"],
             "event_check": "not_run"
         }
@@ -203,7 +207,6 @@ def main() -> int:
             except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, RuntimeError) as exc:
                 result["event_check"] = "error"
                 result["event_error"] = str(exc)
-            time.sleep(6.2)
         elif usable:
             result["event_check"] = "skipped_quota_guard"
         report["targets"].append(result)
@@ -212,7 +215,7 @@ def main() -> int:
     lines = [
         "# SportsEvents24 – resultat- og dækningskontrol", "",
         f"- Kontrolleret (UTC): {report['checked_at_utc']}",
-        "- Metode: pagineret, skrivebeskyttet turneringsopslag samt scorekontrol for de seneste 7 UTC-dage.",
+        "- Metode: pagineret, skrivebeskyttet turneringsopslag med global hastighedsbegrænsning samt scorekontrol for de seneste 7 UTC-dage.",
         "",
         "| Sport | Land | Liga | Turneringsfund | Kampdata-test | Flere sider uafklaret |",
         "|---|---|---|---|---|---|"
