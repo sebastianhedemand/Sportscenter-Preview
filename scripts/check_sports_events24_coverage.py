@@ -107,7 +107,7 @@ def matches_target(name: str, target: dict) -> bool:
 def season_matches(name: str, season: str) -> bool:
     # Treat 2026/27 and 2026/2027 as the same season label.
     if re.fullmatch(r"20\d{2}/\d{2}", season):
-        expanded = season + "0" + season[-2:]
+        expanded = season[:5] + "20" + season[-2:]
         return season in name or expanded in name
     return season in name
 
