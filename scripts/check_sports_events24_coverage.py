@@ -15,7 +15,7 @@ from pathlib import Path
 BASE = "https://sportsevents24.com/api/v1"
 TIMEOUT = 25
 MAX_PAGES_PER_SELECTION = 8
-MAX_EVENT_CHECKS = 13
+MAX_EVENT_CHECKS = 24
 REQUEST_SPACING_SECONDS = 7.0
 _last_request_at = 0.0
 
@@ -33,7 +33,7 @@ TARGETS = [
     {"sport": "football", "sport_id": 1, "country": "GB", "league": "League One",
      "patterns": [r"league\s*one"], "season": "2026/27"},
     {"sport": "football", "sport_id": 1, "country": "DE", "league": "Bundesliga",
-     "patterns": [r"bundesliga"], "season": "2026/27"},
+     "patterns": [r"bundesliga"], "exclude": [r"2\.\s*bundesliga", r"frauen", r"women", r"junior", r"u-?\d+"], "season": "2026/27"},
     {"sport": "football", "sport_id": 1, "country": "IT", "league": "Serie A",
      "patterns": [r"serie\s*a\s*2026"], "season": "2026/27"},
     {"sport": "football", "sport_id": 1, "country": "ES", "league": "La Liga",
@@ -43,11 +43,11 @@ TARGETS = [
     {"sport": "handball", "sport_id": 6, "country": "DK", "league": "Kvindeligaen",
      "patterns": [r"kvindeliga"], "season": "2026/27"},
     {"sport": "handball", "sport_id": 6, "country": "DK", "league": "1. Division herrer",
-     "patterns": [r"1\.\s*division\s*herrer", r"1\.\s*division\s*m[aæ]nd"], "season": "2026/27"},
+     "patterns": [r"1\.\s*division\s*herrer", r"1\.\s*division\s*m[aæ]nd"], "exclude": [r"træningskamp", r"training", r"friendly"], "season": "2026/27"},
     {"sport": "handball", "sport_id": 6, "country": "DK", "league": "1. Division damer",
      "patterns": [r"1\.\s*division\s*damer", r"1\.\s*division\s*kvinder"], "season": "2026/27"},
     {"sport": "handball", "sport_id": 6, "country": "DE", "league": "Tysk Handball-Bundesliga",
-     "patterns": [r"1\.\s*bundesliga\s*m[aä]nner", r"handball-bundesliga"], "season": "2026/27"},
+     "patterns": [r"1\.\s*bundesliga\s*m[aä]nner", r"handball-bundesliga"], "exclude": [r"2\.\s*hbl", r"2\.\s*bundesliga", r"frauen", r"women"], "season": "2026/27"},
 ]
 
 
@@ -99,7 +99,9 @@ def tournament_id(row: dict):
 
 def matches_target(name: str, target: dict) -> bool:
     text = name.casefold()
-    return any(re.search(pattern, text, re.I) for pattern in target["patterns"])
+    if not any(re.search(pattern, text, re.I) for pattern in target["patterns"]):
+        return False
+    return not any(re.search(pattern, text, re.I) for pattern in target.get("exclude", []))
 
 
 def main() -> int:
@@ -180,42 +182,54 @@ def main() -> int:
             "status": "not_found" if not match_rows else "tournament_found",
             "tournament_matches": [
                 {"name": tournament_name(r), "tournament_id": tournament_id(r)}
-                for r in entry["all_matches"][:20]
+                for r in entry["all_matches"][:30]
             ],
             "pagination_incomplete": entry["more_pages_available"],
             "discovery_pages_read": entry["pages_read"],
             "discovery_error": entry["error"],
-            "event_check": "not_run"
+            "event_check": "not_run",
+            "candidate_event_checks": []
         }
-        usable = next((r for r in match_rows if tournament_id(r) is not None), None)
-        if usable and event_checks < MAX_EVENT_CHECKS:
+        candidates = [r for r in match_rows if tournament_id(r) is not None]
+        for candidate in candidates:
+            if event_checks >= MAX_EVENT_CHECKS:
+                break
+            tid = tournament_id(candidate)
+            check = {"tournament_id": tid, "tournament_name": tournament_name(candidate)}
             try:
                 from_date = (datetime.now(timezone.utc).date() - __import__("datetime").timedelta(days=7)).isoformat()
                 to_date = (datetime.now(timezone.utc).date() + __import__("datetime").timedelta(days=1)).isoformat()
-                payload = get_json("events", {"tournament_id": str(tournament_id(usable)), "from": from_date, "to": to_date, "limit": "100"})
+                payload = get_json("events", {"tournament_id": str(tid), "from": from_date, "to": to_date, "limit": "100"})
                 events = data_rows(payload)
                 event_checks += 1
                 scored = [e for e in events if e.get("result") or e.get("home_score") is not None or e.get("score") is not None]
                 finished = [e for e in events if str(e.get("category", "")).casefold() in ("finished", "completed", "result") or e.get("result")]
-                result["event_check"] = "ok"
-                result["event_window_utc"] = {"from": from_date, "to_exclusive": to_date}
-                result["events_in_previous_7_days"] = len(events)
-                result["finished_events_detected"] = len(finished)
-                result["events_with_score_fields"] = len(scored)
-                result["event_sample"] = events[:5]
-                result["event_usage"] = payload.get("usage")
+                check.update({
+                    "status": "ok", "events": len(events), "finished_events": len(finished),
+                    "events_with_score_fields": len(scored), "sample": events[:3],
+                    "usage": payload.get("usage")
+                })
             except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, RuntimeError) as exc:
-                result["event_check"] = "error"
-                result["event_error"] = str(exc)
-        elif usable:
-            result["event_check"] = "skipped_quota_guard"
+                check.update({"status": "error", "error": str(exc)})
+            result["candidate_event_checks"].append(check)
+            if check.get("status") == "error" and "429" in check.get("error", ""):
+                break
+        successful = [c for c in result["candidate_event_checks"] if c.get("status") == "ok"]
+        best = max(successful, key=lambda c: (c.get("events_with_score_fields", 0), c.get("finished_events", 0), c.get("events", 0)), default=None)
+        result["best_candidate"] = best
+        result["event_check"] = "ok" if successful else ("skipped_quota_guard" if candidates and event_checks >= MAX_EVENT_CHECKS else ("error" if candidates else "not_run"))
+        if best:
+            result["event_window_utc"] = {"from": from_date, "to_exclusive": to_date}
+            result["events_in_previous_7_days"] = best["events"]
+            result["finished_events_detected"] = best["finished_events"]
+            result["events_with_score_fields"] = best["events_with_score_fields"]
         report["targets"].append(result)
 
     Path("sports-events24-coverage.json").write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     lines = [
         "# SportsEvents24 – resultat- og dækningskontrol", "",
         f"- Kontrolleret (UTC): {report['checked_at_utc']}",
-        "- Metode: pagineret, skrivebeskyttet turneringsopslag med global hastighedsbegrænsning samt scorekontrol for de seneste 7 UTC-dage.",
+        "- Metode: pagineret, skrivebeskyttet turneringsopslag; relevante sæson-ID’er testes separat med global hastighedsbegrænsning og scorekontrol for de seneste 7 UTC-dage.",
         "",
         "| Sport | Land | Liga | Turneringsfund | Kampdata-test | Flere sider uafklaret |",
         "|---|---|---|---|---|---|"
@@ -233,10 +247,12 @@ def main() -> int:
                 lines.append(f"- {t['name']} (turnerings-ID: {t['tournament_id']})")
         else:
             lines.append("Ingen matchende turnering fundet i de gennemgåede sider.")
-        if item["event_check"] == "ok":
-            lines.append(f"- Kampe i seneste 7 dage: {item['events_in_previous_7_days']}")
-            lines.append(f"- Afsluttede kampe identificeret: {item['finished_events_detected']}")
-            lines.append(f"- Kampe med scorefelter: {item['events_with_score_fields']}")
+        if item.get("candidate_event_checks"):
+            for check in item["candidate_event_checks"]:
+                lines.append(f"- ID {check['tournament_id']} ({check['tournament_name']}): {check['status']}" +
+                             (f", {check.get('events', 0)} kampe, {check.get('events_with_score_fields', 0)} med scorefelter" if check.get("status") == "ok" else ""))
+            if item.get("best_candidate"):
+                lines.append(f"- Bedste kandidat ud fra kamp-/scoredata: ID {item['best_candidate']['tournament_id']}")
         else:
             lines.append(f"- Kampdata-test: {item['event_check']}")
         if item["discovery_error"]:
