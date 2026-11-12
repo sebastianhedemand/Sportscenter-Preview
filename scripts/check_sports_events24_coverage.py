@@ -179,6 +179,52 @@ def main() -> int:
                 "more_pages_available": bool(cursor)
             }
 
+    # If tournament discovery returns no UK/Spain league names, inspect country+sport
+    # events directly. This is a narrow fallback, not an unfiltered bulk download.
+    fallback_runs = {}
+    for target in TARGETS:
+        key = (target["sport"], target["country"], target["league"])
+        entry = found_by_key[key]
+        if entry["matches"] or target["country"] not in ("GB", "ES"):
+            continue
+        group_key = (target["sport_id"], target["country"])
+        if group_key not in fallback_runs:
+            from_date = (datetime.now(timezone.utc).date() - __import__("datetime").timedelta(days=7)).isoformat()
+            to_date = (datetime.now(timezone.utc).date() + __import__("datetime").timedelta(days=30)).isoformat()
+            try:
+                payload = get_json("events", {
+                    "sport_id": str(target["sport_id"]), "country": target["country"],
+                    "from": from_date, "to": to_date, "limit": "100"
+                })
+                rows = data_rows(payload)
+                fallback_runs[group_key] = {"rows": rows, "error": None, "from": from_date, "to": to_date}
+            except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, RuntimeError) as exc:
+                fallback_runs[group_key] = {"rows": [], "error": str(exc), "from": from_date, "to": to_date}
+        fallback = fallback_runs[group_key]
+        event_rows = [r for r in fallback["rows"] if matches_target(str(r.get("tournament", "")), target)]
+        candidates = {}
+        for row in event_rows:
+            tid = row.get("tournamentId") or row.get("tournament_id")
+            name = row.get("tournament", "")
+            if tid is not None:
+                candidates[str(tid)] = {"id": tid, "name": name}
+        if candidates:
+            entry["matches"] = list(candidates.values())
+            entry["all_matches"] = list(candidates.values())
+            entry["fallback_event_discovery"] = {
+                "events_scanned": len(fallback["rows"]),
+                "matching_events": len(event_rows),
+                "candidate_tournaments": list(candidates.values()),
+                "window_utc": {"from": fallback["from"], "to_exclusive": fallback["to"]},
+                "error": fallback["error"]
+            }
+        else:
+            entry["fallback_event_discovery"] = {
+                "events_scanned": len(fallback["rows"]), "matching_events": 0,
+                "window_utc": {"from": fallback["from"], "to_exclusive": fallback["to"]},
+                "error": fallback["error"]
+            }
+
     event_checks = 0
     for target in TARGETS:
         key = (target["sport"], target["country"], target["league"])
@@ -195,6 +241,7 @@ def main() -> int:
             "pagination_incomplete": entry["more_pages_available"],
             "discovery_pages_read": entry["pages_read"],
             "discovery_error": entry["error"],
+            "fallback_event_discovery": entry.get("fallback_event_discovery"),
             "event_check": "not_run",
             "candidate_event_checks": []
         }
