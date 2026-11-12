@@ -70,7 +70,7 @@ Bemærk: Dette automatiserer de fodboldresultater, som den nuværende API-Footba
 
 ## Test af gratis sportsdatakilder
 
-En manuel GitHub Actions-test undersøger SportsEvents24's turneringsoversigter for de 13 ønskede fodbold- og håndboldligaer. Testen følger `nextCursor` og læser flere sider (med en grænse på otte sider pr. land/sport) i stedet for kun den første side. For hver fundet liga testes flere relevante sæson-ID'er separat (op til 24 event-opslag samlet), så forkerte dubletter, 2. Bundesliga og træningskampe lettere kan frasorteres. For hvert ID undersøges offentliggjorte kampe i API'ets seneste 7-dages vindue.
+En manuel GitHub Actions-test undersøger SportsEvents24's turneringsoversigter for de 13 ønskede fodbold- og håndboldligaer. Testen følger `nextCursor` og læser flere sider (med en grænse på otte sider pr. land/sport) i stedet for kun den første side. For hver fundet liga testes flere relevante sæson-ID'er separat (op til 24 event-opslag samlet), så forkerte dubletter, 2. Bundesliga og træningskampe lettere kan frasorteres. For hvert ID undersøges offentliggjorte kampe i API'ets seneste 7-dages vindue. Sæsonformaterne `2026/27` og `2026/2027` normaliseres. Hvis turneringslisten ikke finder engelske eller spanske ligaer, laver testen desuden et begrænset land+sport-opslag på kampe i API'ets tilladte datovindue for at lede efter turnerings-ID'er.
 
 Sådan køres testen:
 
