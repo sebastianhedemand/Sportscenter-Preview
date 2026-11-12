@@ -6,6 +6,7 @@ import json
 import re
 import sys
 import time
+import email.utils
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -15,7 +16,8 @@ from pathlib import Path
 BASE = "https://sportsevents24.com/api/v1"
 TIMEOUT = 25
 MAX_PAGES_PER_SELECTION = 5
-MAX_EVENT_CHECKS = 20
+MAX_EVENT_CHECKS = 13
+REQUEST_SPACING_SECONDS = 7.0
 
 # Match exact top-flight/second-tier competition names, not similarly named youth,
 # regional, cup, futsal or women's competitions unless explicitly requested.
@@ -51,13 +53,18 @@ TARGETS = [
 
 def get_json(path: str, params: dict[str, str]) -> dict:
     url = f"{BASE}/{path}?{urllib.parse.urlencode(params)}"
-    req = urllib.request.Request(url, headers={"User-Agent": "Sportscenter-preview-coverage-check/2.0"})
-    with urllib.request.urlopen(req, timeout=TIMEOUT) as response:
-        payload = json.loads(response.read().decode("utf-8"))
+    req = urllib.request.Request(url, headers={"User-Agent": "Sportscenter-preview-coverage-check/3.0"})
+    try:
+        with urllib.request.urlopen(req, timeout=TIMEOUT) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        if exc.code == 429:
+            retry_after = exc.headers.get("Retry-After", "60")
+            raise RuntimeError(f"HTTP 429 rate limited; Retry-After={retry_after}") from exc
+        raise
     if not isinstance(payload, dict):
         raise RuntimeError("Unexpected JSON response shape")
     return payload
-
 
 def data_rows(payload: dict) -> list[dict]:
     data = payload.get("data", [])
@@ -104,7 +111,7 @@ def main() -> int:
         "notes": [
             "Pagination follows nextCursor with identical filters as documented by the provider.",
             "A tournament name is not proof of complete season coverage.",
-            "Event checks use the provider's default published event window (today through next 7 days).",
+            "Event checks explicitly request the previous 7 UTC days through today to inspect finished-match scores.",
             "The API permits event dates only within the last 7 and next 30 days; this does not establish deep historical availability.",
             "No odds endpoint is documented in the public API overview.",
             "Commercial redistribution rights must be confirmed with the provider before paid use."
@@ -138,7 +145,7 @@ def main() -> int:
                 names = [tournament_name(r) for r in all_rows]
                 if all(any(matches_target(n, t) for n in names) for t in targets):
                     break
-                time.sleep(6.2)  # remain below 10 requests/minute
+                time.sleep(REQUEST_SPACING_SECONDS)  # remain below 10 requests/minute
             except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, RuntimeError) as exc:
                 error = str(exc)
                 break
@@ -179,12 +186,17 @@ def main() -> int:
         usable = next((r for r in match_rows if tournament_id(r) is not None), None)
         if usable and event_checks < MAX_EVENT_CHECKS:
             try:
-                payload = get_json("events", {"tournament_id": str(tournament_id(usable)), "limit": "100"})
+                from_date = (datetime.now(timezone.utc).date() - __import__("datetime").timedelta(days=7)).isoformat()
+                to_date = (datetime.now(timezone.utc).date() + __import__("datetime").timedelta(days=1)).isoformat()
+                payload = get_json("events", {"tournament_id": str(tournament_id(usable)), "from": from_date, "to": to_date, "limit": "100"})
                 events = data_rows(payload)
                 event_checks += 1
                 scored = [e for e in events if e.get("result") or e.get("home_score") is not None or e.get("score") is not None]
+                finished = [e for e in events if str(e.get("category", "")).casefold() in ("finished", "completed", "result") or e.get("result")]
                 result["event_check"] = "ok"
-                result["published_events_in_default_window"] = len(events)
+                result["event_window_utc"] = {"from": from_date, "to_exclusive": to_date}
+                result["events_in_previous_7_days"] = len(events)
+                result["finished_events_detected"] = len(finished)
                 result["events_with_score_fields"] = len(scored)
                 result["event_sample"] = events[:5]
                 result["event_usage"] = payload.get("usage")
@@ -198,9 +210,9 @@ def main() -> int:
 
     Path("sports-events24-coverage.json").write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     lines = [
-        "# SportsEvents24 – udvidet dækningskontrol", "",
+        "# SportsEvents24 – resultat- og dækningskontrol", "",
         f"- Kontrolleret (UTC): {report['checked_at_utc']}",
-        "- Metode: pagineret, skrivebeskyttet turneringsopslag samt begrænset test af kampdata.",
+        "- Metode: pagineret, skrivebeskyttet turneringsopslag samt scorekontrol for de seneste 7 UTC-dage.",
         "",
         "| Sport | Land | Liga | Turneringsfund | Kampdata-test | Flere sider uafklaret |",
         "|---|---|---|---|---|---|"
@@ -219,7 +231,8 @@ def main() -> int:
         else:
             lines.append("Ingen matchende turnering fundet i de gennemgåede sider.")
         if item["event_check"] == "ok":
-            lines.append(f"- Kampdata i standardvinduet: {item['published_events_in_default_window']}")
+            lines.append(f"- Kampe i seneste 7 dage: {item['events_in_previous_7_days']}")
+            lines.append(f"- Afsluttede kampe identificeret: {item['finished_events_detected']}")
             lines.append(f"- Kampe med scorefelter: {item['events_with_score_fields']}")
         else:
             lines.append(f"- Kampdata-test: {item['event_check']}")
