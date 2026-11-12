@@ -104,6 +104,14 @@ def matches_target(name: str, target: dict) -> bool:
     return not any(re.search(pattern, text, re.I) for pattern in target.get("exclude", []))
 
 
+def season_matches(name: str, season: str) -> bool:
+    # Treat 2026/27 and 2026/2027 as the same season label.
+    if re.fullmatch(r"20\\d{2}/\\d{2}", season):
+        expanded = season + "0" + season[-2:]
+        return season in name or expanded in name
+    return season in name
+
+
 def main() -> int:
     report = {
         "checked_at_utc": datetime.now(timezone.utc).isoformat(),
@@ -163,8 +171,8 @@ def main() -> int:
         for target in targets:
             matches = [r for r in all_rows if matches_target(tournament_name(r), target)]
             # Prefer exact season/year matches, but retain all matching names for review.
-            season_matches = [r for r in matches if target["season"] in tournament_name(r)]
-            chosen = season_matches or matches
+            season_rows = [r for r in matches if season_matches(tournament_name(r), target["season"])]
+            chosen = season_rows or matches
             found_by_key[(target["sport"], target["country"], target["league"])] = {
                 "target": target, "matches": chosen, "all_matches": matches,
                 "pages_read": pages, "error": error,
